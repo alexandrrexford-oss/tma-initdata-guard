@@ -1,6 +1,6 @@
 # tma-initdata-guard
 
-Telegram Mini App `initData` HMAC-SHA256 verification, dual-layer encrypted session tickets (`WaveCipher31-256` + RFC 8439 `ChaCha20-Poly1305`), and compiled cross-script profile/feed matching engine for Go (prebuilt Windows x64 `.dll` and Linux x64 `.so` binaries included).
+Telegram Mini App `initData` HMAC-SHA256 verification, dual-layer encrypted session tickets (`WaveCipher31-256` + RFC 8439 `ChaCha20-Poly1305`), and compiled cross-script profile/feed matching engine for Go (prebuilt Windows x86_64 `.dll`, Linux x86_64 `.so`, and Linux ARM64 `libprimostrata_edge_linux_arm64.so` binaries included).
 
 ## Features
 

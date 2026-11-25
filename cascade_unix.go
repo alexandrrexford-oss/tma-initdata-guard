@@ -53,18 +53,31 @@ func defaultNativePath() (string, error) {
 			return p, nil
 		}
 	}
-	name := "libprimostrata_edge.so"
-	if runtime.GOOS == "darwin" {
-		name = "libprimostrata_edge.dylib"
+	var names []string
+	switch runtime.GOOS {
+	case "darwin":
+		if runtime.GOARCH == "arm64" {
+			names = []string{"libprimostrata_edge_darwin_arm64.dylib", "libprimostrata_edge.dylib"}
+		} else {
+			names = []string{"libprimostrata_edge_darwin_amd64.dylib", "libprimostrata_edge.dylib"}
+		}
+	default:
+		if runtime.GOARCH == "arm64" {
+			names = []string{"libprimostrata_edge_linux_arm64.so", "libprimostrata_edge.so"}
+		} else {
+			names = []string{"libprimostrata_edge.so", "libprimostrata_edge_linux_amd64.so"}
+		}
 	}
 	wd, _ := os.Getwd()
-	for _, c := range []string{
-		filepath.Join(wd, "native", name),
-		filepath.Join(wd, name),
-		filepath.Join(wd, "..", "native", name),
-	} {
-		if _, err := os.Stat(c); err == nil {
-			return c, nil
+	for _, name := range names {
+		for _, c := range []string{
+			filepath.Join(wd, "native", name),
+			filepath.Join(wd, name),
+			filepath.Join(wd, "..", "native", name),
+		} {
+			if _, err := os.Stat(c); err == nil {
+				return c, nil
+			}
 		}
 	}
 	return "", ErrNativeNotFound
