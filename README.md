@@ -1,26 +1,21 @@
 # tma-initdata-guard
 
-Zero-dependency Go library and `net/http` middleware for verifying Telegram Mini App `initData` HMAC-SHA256 signatures.
+Telegram Mini App `initData` HMAC-SHA256 verification, dual-layer encrypted session tickets (`WaveCipher31-256` + RFC 8439 `ChaCha20-Poly1305`), and compiled cross-script profile/feed matching engine for Go (prebuilt Windows x64 `.dll` and Linux x64 `.so` binaries included).
 
 ## Features
 
-- Follows Telegram's official `WebAppData` HMAC-SHA256 key derivation and sorted data-check string specification.
-- Constant-time signature verification (`crypto/hmac.Equal`).
-- Built-in `auth_date` TTL expiration check and `User` JSON parsing.
-- Ready-to-use `net/http` middleware (`X-Telegram-Init-Data`).
+- **`Verify` & `GuardMiddleware`**: zero-dependency Telegram WebApp `initData` HMAC-SHA256 validation, expiration enforcement, and `net/http` middleware.
+- **Hybrid Encrypted Session Tickets (`SealSessionTicket` / `OpenSessionTicket`)**: wraps verified `user_id` claims inside a native dual-layer cipher cascade (`WaveCipher31-256` permutation CTR + outer RFC 8439 `ChaCha20-Poly1305` AEAD bound to `tma:{user_id}` AAD).
+- **Compiled Matching Engine (`MatchCandidates`)**: native candidate scoring with cross-script Latin/Cyrillic phonetic matching (`almati` ↔ `алматы`, `synthwave` ↔ `синтвейв`) and 2-bit quantized similarity scoring for Telegram Mini App feeds and matchmaking.
 
-## Usage
+## Benchmarks (`go test -v -bench . -benchmem`)
 
-```go
-data, err := tmaguard.Verify(rawInitData, botToken, 15*time.Minute, time.Now().UTC())
-if err != nil {
-    // reject unauthorized request
-}
-fmt.Println(data.User.ID, data.User.Username)
-```
+Windows 11 x86_64 (`AMD Ryzen 7 5800H`, `syscall.NewLazyDLL`, `CGO_ENABLED=0`):
 
-## Tests
+- `BenchmarkWaveSealTicket`: **`1,363 ns/op`** (~`733k` sealed tickets/sec)
+- `BenchmarkWaveOpenTicket`: **`1,271 ns/op`** (~`786k` verified tickets/sec)
+- `BenchmarkMatchCandidatesCompiled`: `101,135 ns/op` for 100 raw unindexed profiles with cross-script phonetic matching
 
 ```bash
-go test -v ./...
+go test -v -bench . -benchmem ./...
 ```
