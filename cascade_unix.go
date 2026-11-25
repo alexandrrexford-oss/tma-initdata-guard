@@ -40,11 +40,13 @@ var (
 )
 
 type NativeEngine struct {
-	handle      unsafe.Pointer
-	pWaveSeal   unsafe.Pointer
-	pWaveOpen   unsafe.Pointer
-	pMatchScore unsafe.Pointer
-	buf         []byte
+	handle       unsafe.Pointer
+	pWave31Seal  unsafe.Pointer
+	pWave31Open  unsafe.Pointer
+	pCascadeSeal unsafe.Pointer
+	pCascadeOpen unsafe.Pointer
+	pMatchScore  unsafe.Pointer
+	buf          []byte
 }
 
 func defaultNativePath() (string, error) {
@@ -97,20 +99,26 @@ func NewNativeEngine(libPath string) (*NativeEngine, error) {
 	if h == nil {
 		return nil, fmt.Errorf("tmaguard: dlopen failed for %s", libPath)
 	}
-	s1 := C.CString("primo_wave_cascade_seal")
-	s2 := C.CString("primo_wave_cascade_open")
-	s3 := C.CString("primo_match_score_candidates")
+	s1 := C.CString("primo_wave31_seal")
+	s2 := C.CString("primo_wave31_open")
+	s3 := C.CString("primo_wave_cascade_seal")
+	s4 := C.CString("primo_wave_cascade_open")
+	s5 := C.CString("primo_match_score_candidates")
 	defer func() {
 		C.free(unsafe.Pointer(s1))
 		C.free(unsafe.Pointer(s2))
 		C.free(unsafe.Pointer(s3))
+		C.free(unsafe.Pointer(s4))
+		C.free(unsafe.Pointer(s5))
 	}()
 	return &NativeEngine{
-		handle:      h,
-		pWaveSeal:   C.tma_sym(h, s1),
-		pWaveOpen:   C.tma_sym(h, s2),
-		pMatchScore: C.tma_sym(h, s3),
-		buf:         make([]byte, 65536),
+		handle:       h,
+		pWave31Seal:  C.tma_sym(h, s1),
+		pWave31Open:  C.tma_sym(h, s2),
+		pCascadeSeal: C.tma_sym(h, s3),
+		pCascadeOpen: C.tma_sym(h, s4),
+		pMatchScore:  C.tma_sym(h, s5),
+		buf:          make([]byte, 65536),
 	}, nil
 }
 
@@ -125,44 +133,43 @@ func deriveTicketKey(botToken string) [32]byte {
 	return sha256.Sum256([]byte("tma-wave-ticket:" + botToken))
 }
 
-func (n *NativeEngine) SealSessionTicket(botToken string, userID int64, payload, nonce12 []byte) ([]byte, error) {
+func (n *NativeEngine) callWave(fn unsafe.Pointer, botToken string, userID int64, input, nonce12 []byte, rounds C.uint8_t, authErr error) ([]byte, error) {
 	if len(nonce12) != 12 {
 		return nil, errors.New("tmaguard: nonce must be 12 bytes")
 	}
 	key := deriveTicketKey(botToken)
 	aad := []byte(fmt.Sprintf("tma:%d", userID))
 	var outLen C.size_t
-	rc := C.call_wave(n.pWaveSeal, (*C.uint8_t)(&key[0]), cPtr(nonce12), cPtr(aad), C.size_t(len(aad)), cPtr(payload), C.size_t(len(payload)), 8, cPtr(n.buf), C.size_t(len(n.buf)), &outLen)
+	rc := C.call_wave(fn, (*C.uint8_t)(&key[0]), cPtr(nonce12), cPtr(aad), C.size_t(len(aad)), cPtr(input), C.size_t(len(input)), rounds, cPtr(n.buf), C.size_t(len(n.buf)), &outLen)
 	if int32(rc) == -2 {
 		n.buf = make([]byte, int(outLen))
-		rc = C.call_wave(n.pWaveSeal, (*C.uint8_t)(&key[0]), cPtr(nonce12), cPtr(aad), C.size_t(len(aad)), cPtr(payload), C.size_t(len(payload)), 8, cPtr(n.buf), C.size_t(len(n.buf)), &outLen)
+		rc = C.call_wave(fn, (*C.uint8_t)(&key[0]), cPtr(nonce12), cPtr(aad), C.size_t(len(aad)), cPtr(input), C.size_t(len(input)), rounds, cPtr(n.buf), C.size_t(len(n.buf)), &outLen)
 	}
 	if rc != 0 {
-		return nil, fmt.Errorf("tmaguard: wave seal failed rc=%d", int32(rc))
+		if authErr != nil {
+			return nil, authErr
+		}
+		return nil, fmt.Errorf("tmaguard: wave op failed rc=%d", int32(rc))
 	}
 	out := make([]byte, int(outLen))
 	copy(out, n.buf[:int(outLen)])
 	return out, nil
 }
 
+func (n *NativeEngine) SealSessionTicket(botToken string, userID int64, payload, nonce12 []byte) ([]byte, error) {
+	return n.callWave(n.pWave31Seal, botToken, userID, payload, nonce12, 4, nil)
+}
+
 func (n *NativeEngine) OpenSessionTicket(botToken string, userID int64, ticket, nonce12 []byte) ([]byte, error) {
-	if len(nonce12) != 12 {
-		return nil, errors.New("tmaguard: nonce must be 12 bytes")
-	}
-	key := deriveTicketKey(botToken)
-	aad := []byte(fmt.Sprintf("tma:%d", userID))
-	var outLen C.size_t
-	rc := C.call_wave(n.pWaveOpen, (*C.uint8_t)(&key[0]), cPtr(nonce12), cPtr(aad), C.size_t(len(aad)), cPtr(ticket), C.size_t(len(ticket)), 8, cPtr(n.buf), C.size_t(len(n.buf)), &outLen)
-	if int32(rc) == -2 {
-		n.buf = make([]byte, int(outLen))
-		rc = C.call_wave(n.pWaveOpen, (*C.uint8_t)(&key[0]), cPtr(nonce12), cPtr(aad), C.size_t(len(aad)), cPtr(ticket), C.size_t(len(ticket)), 8, cPtr(n.buf), C.size_t(len(n.buf)), &outLen)
-	}
-	if rc != 0 {
-		return nil, ErrTicketAuthFailed
-	}
-	out := make([]byte, int(outLen))
-	copy(out, n.buf[:int(outLen)])
-	return out, nil
+	return n.callWave(n.pWave31Open, botToken, userID, ticket, nonce12, 4, ErrTicketAuthFailed)
+}
+
+func (n *NativeEngine) SealSessionTicketContourB(botToken string, userID int64, payload, nonce12 []byte) ([]byte, error) {
+	return n.callWave(n.pCascadeSeal, botToken, userID, payload, nonce12, 8, nil)
+}
+
+func (n *NativeEngine) OpenSessionTicketContourB(botToken string, userID int64, ticket, nonce12 []byte) ([]byte, error) {
+	return n.callWave(n.pCascadeOpen, botToken, userID, ticket, nonce12, 8, ErrTicketAuthFailed)
 }
 
 type SessionClaims struct {

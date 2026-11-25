@@ -47,6 +47,16 @@ func TestWaveCipherSessionTicketAndTamper(t *testing.T) {
 	if _, err := eng.OpenSessionTicket(botToken, 4242, bad, nonce); err == nil {
 		t.Fatal("expected failure on tampered ticket")
 	}
+
+	// Optional Contour B (WaveCipher31-256 + RFC ChaCha20-Poly1305 cascade)
+	ticketB, err := eng.SealSessionTicketContourB(botToken, 4242, pt, nonce)
+	if err != nil {
+		t.Fatalf("SealSessionTicketContourB: %v", err)
+	}
+	ptB, err := eng.OpenSessionTicketContourB(botToken, 4242, ticketB, nonce)
+	if err != nil || !bytes.Equal(ptB, pt) {
+		t.Fatalf("OpenSessionTicketContourB mismatch: err=%v", err)
+	}
 }
 
 func TestCompiledMatchingScorer(t *testing.T) {

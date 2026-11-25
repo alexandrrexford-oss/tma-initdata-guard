@@ -21,11 +21,13 @@ var (
 )
 
 type NativeEngine struct {
-	dll         *syscall.LazyDLL
-	pWaveSeal   *syscall.LazyProc
-	pWaveOpen   *syscall.LazyProc
-	pMatchScore *syscall.LazyProc
-	buf         []byte
+	dll          *syscall.LazyDLL
+	pWave31Seal  *syscall.LazyProc
+	pWave31Open  *syscall.LazyProc
+	pCascadeSeal *syscall.LazyProc
+	pCascadeOpen *syscall.LazyProc
+	pMatchScore  *syscall.LazyProc
+	buf          []byte
 }
 
 func defaultNativePath() (string, error) {
@@ -60,11 +62,13 @@ func NewNativeEngine(libPath string) (*NativeEngine, error) {
 		return nil, err
 	}
 	return &NativeEngine{
-		dll:         dll,
-		pWaveSeal:   dll.NewProc("primo_wave_cascade_seal"),
-		pWaveOpen:   dll.NewProc("primo_wave_cascade_open"),
-		pMatchScore: dll.NewProc("primo_match_score_candidates"),
-		buf:         make([]byte, 65536),
+		dll:          dll,
+		pWave31Seal:  dll.NewProc("primo_wave31_seal"),
+		pWave31Open:  dll.NewProc("primo_wave31_open"),
+		pCascadeSeal: dll.NewProc("primo_wave_cascade_seal"),
+		pCascadeOpen: dll.NewProc("primo_wave_cascade_open"),
+		pMatchScore:  dll.NewProc("primo_match_score_candidates"),
+		buf:          make([]byte, 65536),
 	}, nil
 }
 
@@ -79,78 +83,63 @@ func bPtr(b []byte) uintptr {
 	return uintptr(unsafe.Pointer(&b[0]))
 }
 
-// SealSessionTicket encrypts payload using the dual-layer WaveCipher31-256 + ChaCha20-Poly1305 cascade.
-func (n *NativeEngine) SealSessionTicket(botToken string, userID int64, payload, nonce12 []byte) ([]byte, error) {
+func (n *NativeEngine) callWave(proc *syscall.LazyProc, botToken string, userID int64, input, nonce12 []byte, rounds uintptr, authErr error) ([]byte, error) {
 	if len(nonce12) != 12 {
 		return nil, errors.New("tmaguard: nonce must be 12 bytes")
 	}
 	key := deriveTicketKey(botToken)
 	aad := []byte(fmt.Sprintf("tma:%d", userID))
 	var outLen uintptr
-	rc, _, _ := n.pWaveSeal.Call(
+	rc, _, _ := proc.Call(
 		uintptr(unsafe.Pointer(&key[0])),
 		bPtr(nonce12),
 		bPtr(aad), uintptr(len(aad)),
-		bPtr(payload), uintptr(len(payload)),
-		8,
+		bPtr(input), uintptr(len(input)),
+		rounds,
 		bPtr(n.buf), uintptr(len(n.buf)),
 		uintptr(unsafe.Pointer(&outLen)),
 	)
 	if int32(rc) == -2 {
 		n.buf = make([]byte, outLen)
-		rc, _, _ = n.pWaveSeal.Call(
+		rc, _, _ = proc.Call(
 			uintptr(unsafe.Pointer(&key[0])),
 			bPtr(nonce12),
 			bPtr(aad), uintptr(len(aad)),
-			bPtr(payload), uintptr(len(payload)),
-			8,
+			bPtr(input), uintptr(len(input)),
+			rounds,
 			bPtr(n.buf), uintptr(len(n.buf)),
 			uintptr(unsafe.Pointer(&outLen)),
 		)
 	}
 	if int32(rc) != 0 {
-		return nil, fmt.Errorf("tmaguard: wave seal failed rc=%d", int32(rc))
+		if authErr != nil {
+			return nil, authErr
+		}
+		return nil, fmt.Errorf("tmaguard: wave op failed rc=%d", int32(rc))
 	}
 	out := make([]byte, outLen)
 	copy(out, n.buf[:outLen])
 	return out, nil
 }
 
-// OpenSessionTicket authenticates and decrypts a WaveCipher31-256 + ChaCha20-Poly1305 ticket.
+// SealSessionTicket encrypts payload using Contour A (default pure WaveCipher31-512 CTR + WaveCipher31-256 MAC, zero ChaCha20).
+func (n *NativeEngine) SealSessionTicket(botToken string, userID int64, payload, nonce12 []byte) ([]byte, error) {
+	return n.callWave(n.pWave31Seal, botToken, userID, payload, nonce12, 4, nil)
+}
+
+// OpenSessionTicket authenticates and decrypts a Contour A pure WaveCipher31 ticket.
 func (n *NativeEngine) OpenSessionTicket(botToken string, userID int64, ticket, nonce12 []byte) ([]byte, error) {
-	if len(nonce12) != 12 {
-		return nil, errors.New("tmaguard: nonce must be 12 bytes")
-	}
-	key := deriveTicketKey(botToken)
-	aad := []byte(fmt.Sprintf("tma:%d", userID))
-	var outLen uintptr
-	rc, _, _ := n.pWaveOpen.Call(
-		uintptr(unsafe.Pointer(&key[0])),
-		bPtr(nonce12),
-		bPtr(aad), uintptr(len(aad)),
-		bPtr(ticket), uintptr(len(ticket)),
-		8,
-		bPtr(n.buf), uintptr(len(n.buf)),
-		uintptr(unsafe.Pointer(&outLen)),
-	)
-	if int32(rc) == -2 {
-		n.buf = make([]byte, outLen)
-		rc, _, _ = n.pWaveOpen.Call(
-			uintptr(unsafe.Pointer(&key[0])),
-			bPtr(nonce12),
-			bPtr(aad), uintptr(len(aad)),
-			bPtr(ticket), uintptr(len(ticket)),
-			8,
-			bPtr(n.buf), uintptr(len(n.buf)),
-			uintptr(unsafe.Pointer(&outLen)),
-		)
-	}
-	if int32(rc) != 0 {
-		return nil, ErrTicketAuthFailed
-	}
-	out := make([]byte, outLen)
-	copy(out, n.buf[:outLen])
-	return out, nil
+	return n.callWave(n.pWave31Open, botToken, userID, ticket, nonce12, 4, ErrTicketAuthFailed)
+}
+
+// SealSessionTicketContourB encrypts payload using optional Contour B (WaveCipher31-256 + RFC 8439 ChaCha20-Poly1305 cascade).
+func (n *NativeEngine) SealSessionTicketContourB(botToken string, userID int64, payload, nonce12 []byte) ([]byte, error) {
+	return n.callWave(n.pCascadeSeal, botToken, userID, payload, nonce12, 8, nil)
+}
+
+// OpenSessionTicketContourB authenticates and decrypts a Contour B hybrid cascade ticket.
+func (n *NativeEngine) OpenSessionTicketContourB(botToken string, userID int64, ticket, nonce12 []byte) ([]byte, error) {
+	return n.callWave(n.pCascadeOpen, botToken, userID, ticket, nonce12, 8, ErrTicketAuthFailed)
 }
 
 type SessionClaims struct {
